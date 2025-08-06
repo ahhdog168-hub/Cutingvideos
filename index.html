@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>🎬 Video Copyright Cleaner Tool (Java + HTML)</title>
+  <style>
+    body { font-family: sans-serif; background: #f4f4f4; padding: 20px; }
+    h2 { color: #333; }
+    code, pre {
+      background: #222; color: #0f0; padding: 15px; border-radius: 5px;
+      overflow-x: auto; display: block; font-family: monospace;
+    }
+  </style>
+</head>
+<body>
+  <h2>📤 Upload Videos</h2>
+  <form id="uploadForm" enctype="multipart/form-data">
+    <input type="file" name="files" multiple accept="video/*" required>
+    <button type="submit">Upload & Clean</button>
+  </form>
+  <p id="status"></p>
+  <ul id="resultsList"></ul>
+
+  <script>
+    document.getElementById('uploadForm').addEventListener('submit', async function(e) {
+      e.preventDefault();
+      const formData = new FormData(this);
+      const status = document.getElementById('status');
+      const list = document.getElementById('resultsList');
+      status.innerText = 'Uploading... Please wait.';
+      list.innerHTML = '';
+
+      const response = await fetch('/api/video/batch-process', {
+        method: 'POST',
+        body: formData
+      });
+
+      const result = await response.json();
+
+      if (result.downloads) {
+        status.innerText = '✅ Done:';
+        result.downloads.forEach(link => {
+          const li = document.createElement('li');
+          li.innerHTML = `<a href="${link}" download>⬇️ Download ${link.split('/').pop()}</a>`;
+          list.appendChild(li);
+        });
+      } else {
+        status.innerText = '❌ Error: ' + result.error;
+      }
+    });
+  </script>
+
+  <hr>
+
+  <h2>💡 Backend: Java Controller</h2>
+  <pre><code>
+@RestController
+@RequestMapping("/api/video")
+public class VideoController {
+
+    private final VideoService videoService;
+
+    public VideoController(VideoService videoService) {
+        this.videoService = videoService;
+    }
+
+    @PostMapping("/batch-process")
+    public ResponseEntity<?> processMultipleVideos(@RequestParam("files") List&lt;MultipartFile&gt; files) {
+        try {
+            List&lt;String&gt; downloadUrls = new ArrayList&lt;&gt;();
+            for (MultipartFile file : files) {
+                String url = videoService.processVideo(file);
+                downloadUrls.add(url);
+            }
+            return ResponseEntity.ok(Map.of("downloads", downloadUrls));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+}
+  </code></pre>
+
+  <h2>🧠 Video Service (Java)</h2>
+  <pre><code>
+@Service
+public class VideoService {
+
+    private final ACRCloudService acrService;
+
+    public VideoService(ACRCloudService acrService) {
+        this.acrService = acrService;
+    }
+
+    public String processVideo(MultipartFile file) throws Exception {
+        File uploaded = new File("uploads/" + file.getOriginalFilename());
+        file.transferTo(uploaded);
+
+        File sampleAudio = new File("uploads/sample.mp3");
+        extractAudio(uploaded, sampleAudio);
+
+        List&lt;TimeRange&gt; copyright = acrService.scanAudio(sampleAudio);
+
+        File cleanOutput = new File("uploads/clean_" + file.getOriginalFilename());
+        cutVideo(uploaded, cleanOutput, copyright);
+
+        return "/uploads/" + cleanOutput.getName();
+    }
+
+    private void extractAudio(File video, File audio) throws IOException, InterruptedException {
+        new ProcessBuilder("ffmpeg", "-y", "-i", video.getAbsolutePath(), "-t", "15",
+            "-q:a", "0", "-map", "a", audio.getAbsolutePath()).inheritIO().start().waitFor();
+    }
+
+    private void cutVideo(File input, File output, List&lt;TimeRange&gt; remove) throws IOException, InterruptedException {
+        // Same FFmpeg logic as before...
+    }
+
+    public static class TimeRange {
+        int start, end;
+        public TimeRange(int s, int e) { start = s; end = e; }
+    }
+}
+  </code></pre>
+
+  <h2>🔍 ACRCloud Integration (Java)</h2>
+  <pre><code>
+@Service
+public class ACRCloudService {
+    private static final String HOST = "identify-eu-west-1.acrcloud.com";
+    private static final String ACCESS_KEY = "YOUR_KEY";
+    private static final String ACCESS_SECRET = "YOUR_SECRET";
+
+    public List&lt;VideoService.TimeRange&gt; scanAudio(File audioFile) throws Exception {
+        byte[] fileData = Files.readAllBytes(audioFile.toPath());
+        String base64Audio = Base64.getEncoder().encodeToString(fileData);
+
+        String timestamp = String.valueOf(System.currentTimeMillis() / 1000);
+        String toSign = "POST\n/v1/identify\n" + ACCESS_KEY + "\naudio\n1\n" + timestamp;
+        String signature = sign(toSign, ACCESS_SECRET);
+
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create("https://" + HOST + "/v1/identify"))
+            .header("access-key", ACCESS_KEY)
+            .header("signature", signature)
+            .header("timestamp", timestamp)
+            .header("data-type", "audio")
+            .header("signature-version", "1")
+            .POST(HttpRequest.BodyPublishers.ofByteArray(fileData))
+            .build();
+
+        HttpClient client = HttpClient.newHttpClient();
+        HttpResponse&lt;String&gt; response = client.send(request, HttpResponse.BodyHandlers.ofString());
+
+        // Return real time ranges after parsing JSON
+        return List.of(new VideoService.TimeRange(10, 25));
+    }
+
+    private String sign(String data, String secret) throws Exception {
+        Mac mac = Mac.getInstance("HmacSHA1");
+        mac.init(new SecretKeySpec(secret.getBytes(), "HmacSHA1"));
+        return Base64.getEncoder().encodeToString(mac.doFinal(data.getBytes()));
+    }
+}
+  </code></pre>
+
+  <h2>⚙️ FFmpeg Required on Server</h2>
+  <pre><code>
+sudo apt install ffmpeg
+  </code></pre>
+
+</body>
+</html>
